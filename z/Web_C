@@ -1,0 +1,1494 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <hwthic.h>             /* HTTP interface declaration file  */
+#include <hwtjic.h>             /* JSON interface declaration file  */
+
+/* ----------------------------------------------------------------- */
+/* Global Variables                                                  */
+/* ----------------------------------------------------------------- */
+#define JSON_CONTENT_MASK 0x00000001
+#define AIRPORT_DELAY_MASK 0x00000001
+
+#define true  1
+#define false 0
+
+/* ----------------------------------------------------------------- */
+/* User-defined types                                                */
+/* ----------------------------------------------------------------- */
+ /* Mapping of data passed back and forth between the main program
+    and the response header exit
+ */
+ typedef struct ??<
+    char               respHdrEyeCatcher??(8??);
+    int               *respStatusCodeAddr;
+    uint32_t           respHeaderCount;
+    int               *mainlineHdrFlagsAddr;
+       ??> HEADERUSERDATA_TYPE;
+
+/*
+    Note:
+    For simplicity in understanding, the values returned from the
+    server are copied from the response body exit into fixed size
+    variables accessible by the main program.  A more robust
+    programming technique would be to get storage in the exit, specify
+    an address and length for each field, and then, when the mainline
+    is finished with the data, it would have the responsibility of
+    freeing the response body storage obtained by the exit.
+ */
+ typedef struct ??<
+    char               respBodyEyeCatcher??(8??);
+    int               *mainlineHdrFlagsAddr;
+    int               *responseBodyDataAddr;
+       ??> BODYUSERDATA_TYPE;
+
+ typedef struct ??<
+    /* airportGeneralInfo */
+    char                airportName??(50??);
+    char                airportIATA??(6??);
+    char                airportState??(30??);
+    /* airportDelayInfo */
+    uint32_t            airportDelayFlags;
+    char                airportStatusType??(30??);
+    char                airportStatusReason??(30??);
+    char                airportAverageDelay??(30??);
+      /* airportWeather */
+    char                airportWeatherCond??(30??);
+    char                airportTemp??(30??);
+    char                airportWind??(30??);
+       ??> RESPBODYDATA_TYPE;
+
+
+int                   requestSuccessful = 0;
+int                   lrc=8;
+HWTH_DIAGAREA_TYPE    ldiagArea;
+HWTH_HANDLE_TYPE      lconnectionHandle;
+HWTH_HANDLE_TYPE      lrequestHandle;
+HWTH_HANDLETYPE_TYPE  lhandleType;
+HWTH_FORCEOPTION_TYPE lforceOption = HWTH_NOFORCE;
+char                 *lSList;
+HWTH_SLIST_TYPE      *lSListAddr = &lSList;
+HWTHHDRX              respHeaderExit;
+HEADERUSERDATA_TYPE   myRespHeaderUserData;
+BODYUSERDATA_TYPE     myRespBodyUserData;
+RESPBODYDATA_TYPE     myRespBodyData;
+
+/* A parser instance is required for all JSON callable services. */
+HWTJ_PARSERHANDLE_TYPE parser_instance;
+
+/* A structure for storing JSON reason codes and error descriptions. */
+HWTJ_DIAGAREA_TYPE diag_area;
+
+/* Declare a variable to hold the value if a match is found. */
+HWTJ_HANDLE_TYPE value_handle = 0;
+
+char * search_string;
+/* Data to be passed back and forth between the main program and the
+   response body exit
+*/
+int respStatusCode = 0;
+int mainlineHdrFlags = 0;
+
+/* -----------------------------------------------------------------*/
+/* Function prototypes                                              */
+/* -----------------------------------------------------------------*/
+HWTHHDRX  rhdrexit;
+HWTHBDYX  rbdyexit;
+
+int HTTP_setupConnection(HWTH_HANDLE_TYPE handle);
+int HTTP_setupRequest(HWTH_HANDLE_TYPE handle
+                     ,HWTH_SLIST_TYPE *SListAddr
+                     ,char            *JCLparm);
+
+int buildSList(HWTH_HANDLE_TYPE  handle
+              ,HWTH_SLIST_TYPE  *pm_SListAddr);
+
+int HTTP_Connect(HWTH_RETURNCODE_TYPE *rc
+                ,HWTH_HANDLE_TYPE       handle
+                ,HWTH_DIAGAREA_TYPE    *diagArea);
+
+int HTTP_Init(HWTH_RETURNCODE_TYPE *rc
+             ,HWTH_HANDLETYPE_TYPE   handleType
+             ,HWTH_HANDLE_TYPE      *handle
+             ,HWTH_DIAGAREA_TYPE    *diagArea);
+
+int HTTP_Set(HWTH_RETURNCODE_TYPE   *rc
+            ,HWTH_HANDLE_TYPE       handle
+            ,HWTH_SET_OPTION_TYPE   option
+            ,void                 **optionValueAddr
+            ,uint32_t               optionValueLen
+            ,HWTH_DIAGAREA_TYPE    *diagArea);
+
+int HTTP_Slst(HWTH_RETURNCODE_TYPE    *rc
+             ,HWTH_HANDLE_TYPE        handle
+             ,HWTH_SLST_FUNCTION_TYPE function
+             ,HWTH_SLIST_TYPE        *sList
+             ,char                  **stringAddr
+             ,uint32_t                stringLen
+             ,HWTH_DIAGAREA_TYPE     *diagArea);
+
+void HTTP_Disconnect(HWTH_RETURNCODE_TYPE  *rc
+                    ,HWTH_HANDLE_TYPE       handle
+                    ,HWTH_DIAGAREA_TYPE    *diagArea);
+
+int HTTP_Request(HWTH_RETURNCODE_TYPE *rc
+                ,HWTH_HANDLE_TYPE       chandle
+                ,HWTH_HANDLE_TYPE       rhandle
+                ,HWTH_DIAGAREA_TYPE    *diagArea);
+
+void HTTP_Terminate(HWTH_RETURNCODE_TYPE  *rc
+                   ,HWTH_HANDLE_TYPE       Handle
+                   ,HWTH_FORCEOPTION_TYPE  forceOption
+                   ,HWTH_DIAGAREA_TYPE    *diagArea);
+
+void writeData(RESPBODYDATA_TYPE myRespBodyData);
+
+_Bool init_parser();
+
+_Bool parse_json_text(const char *jtext, uint32_t jtextLen);
+
+_Bool do_cleanup();
+
+char *find_string(HWTJ_HANDLE_TYPE object, char *search_string);
+
+HWTJ_HANDLE_TYPE find_object(HWTJ_HANDLE_TYPE object,
+                             char *search_string);
+
+void *find_value(HWTJ_HANDLE_TYPE object, char *name,
+      HWTJ_JTYPE_TYPE expected_type);
+
+void *do_get_value(
+    HWTJ_JTYPE_TYPE type);
+
+void display_error(char *msg);
+
+/****************************************************************/
+/* MAINLINE                                                     */
+/*                                                              */
+/****************************************************************/
+int main(int argc, char *argv??(??) )           {
+
+  /* Display some text indicating the program begins processing
+  */
+  printf("*******************************************\n");
+  printf("*HTTP Web Enablement Toolkit Sample Begins*\n");
+
+  /* IATA airport codes must be 3 characters long.  If the user
+     specifies a bogus parameter, get out immediately.
+  */
+  if (strlen(argv??(1??)) != 3) {
+    printf("** Bogus IATA airport code specified! **\n");
+    return(-1);
+  }
+
+  /* Initialize and set up a connection handle
+  */
+  lhandleType = HWTH_HANDLETYPE_CONNECTION;
+  if (HTTP_Init(&lrc, lhandleType, &lconnectionHandle,&ldiagArea)) {
+
+    /* Set the necessary options before connecting to the server
+    */
+    if (HTTP_setupConnection(lconnectionHandle)) {
+
+      /* Connect to the HTTP server
+      */
+      if (HTTP_Connect(&lrc, lconnectionHandle, &ldiagArea)) {
+
+        /* Initialize and set up a request
+        */
+        lhandleType = HWTH_HANDLETYPE_HTTPREQUEST;
+        if (HTTP_Init(&lrc,lhandleType, &lrequestHandle,&ldiagArea)) {
+
+          /* Set the necessary options before connecting
+             to the server.
+          */
+          if (HTTP_setupRequest(lrequestHandle,lSListAddr,
+                                argv??(1??))) {
+
+            /* Send the request
+            */
+            if (HTTP_Request(&lrc,
+                   lconnectionHandle, lrequestHandle, &ldiagArea)) {
+
+               /* If the response code was ok, then write the data
+               */
+               if (respStatusCode == 200) {
+                 writeData(myRespBodyData);
+                 requestSuccessful = 1;
+               }
+            }
+
+            /* Terminate the request
+            */
+            HTTP_Terminate(&lrc,
+                           lrequestHandle, lforceOption, &ldiagArea);
+          }
+        }
+        /* Disconnect the connection
+        */
+        HTTP_Disconnect(&lrc, lconnectionHandle, &ldiagArea);
+      } /* end if HTTP_Connect */
+    }
+    /* Terminate the connection
+    */
+    HTTP_Terminate(&lrc, lconnectionHandle, lforceOption, &ldiagArea);
+  }
+  /* If the last service was successful and the request completed
+     successfully, then put successful message
+  */
+  if ((lrc == 0) && requestSuccessful) {
+    printf("******** Program Ended Successfully *********\n");
+  }
+  else {
+    printf("******** Program Ended Unsuccessfully *********\n");
+    lrc = -1;
+  }
+
+  printf("*HTTP Web Enablement Toolkit Sample Ends  *\n");
+  printf("*******************************************\n");
+return lrc;
+}
+
+/****************************************************************/
+/*                                                              */
+/* FUNCTION: HTTP_Init                                          */
+/*   Issues the hwthinit service and performs error checking    */
+/*                                                              */
+/****************************************************************/
+int HTTP_Init(HWTH_RETURNCODE_TYPE *pm_rc
+             ,HWTH_HANDLETYPE_TYPE  pm_handleType
+             ,HWTH_HANDLE_TYPE     *pm_handle
+             ,HWTH_DIAGAREA_TYPE   *pm_diagArea) {
+
+  /* Initialize the parser work area and retrieve a handle to a parser
+   * instance.
+   */
+  hwthinit(pm_rc, pm_handleType, pm_handle, pm_diagArea);
+
+  printf("-----------------------------------------------\n");
+  if (*pm_rc == HWTH_OK) {
+    printf("SUCCESS: Initialize succeeded (HWTHINIT).\n");
+  } else {
+    printf(" HWTHINIT FAILED : \n");
+    printf("Return Code: %d\n", *pm_rc);
+    printf("Service    : %d\n", pm_diagArea->HWTH_service);
+    printf("Reason Code: %s\n", pm_diagArea->HWTH_reasonCode);
+    printf("Reason Desc: %s\n", pm_diagArea->HWTH_reasonDesc);
+    return false;
+  }
+  return true;
+}
+
+/****************************************************************/
+/*                                                              */
+/* FUNCTION: HTTP_setupConnection                               */
+/*           Sets the necessary connection options             */
+/*                                                              */
+/****************************************************************/
+int HTTP_setupConnection(HWTH_HANDLE_TYPE pm_handle) {
+
+  int success = true;
+
+  HWTH_SET_OPTION_TYPE  loption;
+  uint32_t              lintOptionVal;
+  uint32_t             *lintOptionValPtr = &lintOptionVal;
+  char                 *lcharOptionVal;
+  int                   loptionValLen;
+
+ /* ----------------------------------------------------------------
+    Set the HWT_OPT_VERBOSE option.
+      First, set the verbose option on.  This option is handy when
+      developing an application.  Lots and lots of informational /
+      error messages are written out to standard output to help
+      in debugging efforts.  This option should likely be turned
+      off with HWTH_VERBOSE_OFF or just not set at all (default is
+      off) when the application goes into production.
+    ---------------------------------------------------------------- */
+  loption = HWTH_OPT_VERBOSE;
+  lintOptionVal = HWTH_VERBOSE_ON;
+  loptionValLen  = sizeof(lintOptionVal);
+
+  printf("**** Set HWTH_OPT_VERBOSE for connection ****\n");
+  if (!HTTP_Set(&lrc, lconnectionHandle, loption,
+                (void**)&lintOptionValPtr, loptionValLen, &ldiagArea))
+    return false;
+
+ /* ----------------------------------------------------------------
+    Set URI for connection handle.
+      Connect to the Federal Aviation Administration (FAA) host.
+    ---------------------------------------------------------------- */
+  loption = HWTH_OPT_URI;
+  lcharOptionVal   = "http://services.faa.gov";
+  loptionValLen  = strlen(lcharOptionVal);
+
+  printf("****** Set HWTH_OPT_URI for connection ******\n");
+  if (!HTTP_Set(&lrc, lconnectionHandle, loption,
+                (void**)&lcharOptionVal, loptionValLen, &ldiagArea))
+    return false;
+
+ /* ----------------------------------------------------------------
+    Set HWTH_OPT_COOKIETYPE
+      Enable the cookie engine for this connection.  Any "eligible"
+      stored cookies will be resent to the host on subsequent
+      interactions automatically.
+    ---------------------------------------------------------------- */
+  loption = HWTH_OPT_COOKIETYPE;
+  lintOptionVal = HWTH_COOKIETYPE_SESSION;
+  loptionValLen  = sizeof(lintOptionVal);
+
+ if (!HTTP_Set(&lrc,lconnectionHandle,loption,
+               (void**)&lintOptionValPtr,loptionValLen,&ldiagArea))
+   return false;
+
+ return true;
+}
+
+/****************************************************************/
+/*                                                              */
+/* FUNCTION: HTTP_Set                                           */
+/*                                                              */
+/****************************************************************/
+int HTTP_Set(HWTH_RETURNCODE_TYPE *pm_rc
+        ,HWTH_HANDLE_TYPE      pm_handle
+        ,HWTH_SET_OPTION_TYPE  pm_option
+        ,void                **pm_optionValueAddr
+        ,uint32_t              pm_optionValueLen
+        ,HWTH_DIAGAREA_TYPE   *pm_diagArea) {
+
+  hwthset(pm_rc, pm_handle, pm_option, pm_optionValueAddr,
+          pm_optionValueLen, pm_diagArea);
+
+  printf("-----------------------------------------------\n");
+  if (*pm_rc == HWTH_OK)
+    printf("SUCCESS: Set succeeded (HWTHSET).\n");
+  else {
+    printf("Set failed (HWTHSET).\n");
+    printf("Return Code: %d\n", *pm_rc);
+    printf("Service    : %d\n", pm_diagArea->HWTH_service);
+    printf("Reason Code: %s\n", pm_diagArea->HWTH_reasonCode);
+    printf("Reason Desc: %s\n", pm_diagArea->HWTH_reasonDesc);
+    return false;
+  }
+  return true;
+}
+
+/****************************************************************/
+/*                                                              */
+/* FUNCTION: HTTP_Connect                                       */
+/*   Issues the HWTHCONN service and performs error checking    */
+/*                                                              */
+/****************************************************************/
+int HTTP_Connect(HWTH_RETURNCODE_TYPE *pm_rc
+                ,HWTH_HANDLE_TYPE      pm_handle
+                ,HWTH_DIAGAREA_TYPE   *pm_diagArea)        {
+
+  hwthconn(pm_rc, pm_handle, pm_diagArea);
+
+  printf("-----------------------------------------------\n");
+  if (*pm_rc == HWTH_OK) {
+    printf("SUCCESS: Connect succeeded (HWTHCONN).\n");
+  } else {
+    printf("Connect failed (HWTHCONN).\n");
+    printf("Return Code: %d\n", *pm_rc);
+    printf("Service    : %d\n", pm_diagArea->HWTH_service);
+    printf("Reason Code: %d\n", pm_diagArea->HWTH_reasonCode);
+    printf("Reason Desc: %s\n", pm_diagArea->HWTH_reasonDesc);
+    return false;
+  }
+
+  return true;
+}
+
+/****************************************************************/
+/*                                                              */
+/* FUNCTION: HTTP_setupRequest                                  */
+/*   Sets the necessary request options                         */
+/*                                                              */
+/****************************************************************/
+int HTTP_setupRequest(HWTH_HANDLE_TYPE   pm_handle
+                     ,HWTH_SLIST_TYPE  * pm_SListAddr
+                     ,char             * JCLparm) {
+
+  HWTH_SET_OPTION_TYPE  loption;
+  uint32_t              lintOptionVal;
+  uint32_t             *lintOptionValPtr = &lintOptionVal;
+  char                  lcharOptionVal??(30??);
+  char                 *lcharOptionValPtr;
+  int                   loptionValLen;
+  int                   loptionExit;
+  int                  *loptionExitAddr;
+  void                 *loptionValueAddr;
+
+ /* ----------------------------------------------------------------
+    Set HTTP Request method.
+      A GET request method is used to get data from the server.
+    ---------------------------------------------------------------- */
+  printf("** Set HWTH_OPT_REQUESTMETHOD for request **\n");
+  loption = HWTH_OPT_REQUESTMETHOD;
+  lintOptionVal = HWTH_HTTP_REQUEST_GET;
+  loptionValLen  = sizeof(lintOptionVal);
+
+  if (!HTTP_Set(&lrc, pm_handle, loption, (void**)&lintOptionValPtr,
+                loptionValLen, &ldiagArea))
+    return false;
+
+ /* ----------------------------------------------------------------
+    Set the request URI
+      Set the URN URI that identifies a resource by name that is
+      the target of our request.
+    ---------------------------------------------------------------- */
+  printf("****** Set HWTH_OPT_URI for request ******\n");
+  loption = HWTH_OPT_URI;
+  const char airportPrefix??(20??) = "/airport/status/";
+  memset(lcharOptionVal,0,30);
+  sprintf(lcharOptionVal,"%s%s\0",airportPrefix,JCLparm);
+  lcharOptionValPtr = (char *)&lcharOptionVal;
+  loptionValLen  = strlen(lcharOptionVal);
+
+  if (!HTTP_Set(&lrc, pm_handle, loption, (void**)&lcharOptionValPtr,
+                loptionValLen, &ldiagArea))
+    return false;
+
+ /* ----------------------------------------------------------------
+    Set the response header callback routine
+      Set the address of the routine that is to receive control once
+      for every response header that we receive.
+    ---------------------------------------------------------------- */
+  printf("*Set HWTH_OPT_RESPONSEHDR_EXIT for request*\n");
+  loption = HWTH_OPT_RESPONSEHDR_EXIT;
+  loptionExit      = (int)rhdrexit;
+  printf("rhdrext = %X\n",rhdrexit);
+  loptionExitAddr  = &loptionExit;
+  loptionValLen  = sizeof(loptionExit);
+
+  if (!HTTP_Set(&lrc, pm_handle, loption, (void**)&loptionExitAddr,
+                loptionValLen, &ldiagArea))
+    return false;
+
+ /* ----------------------------------------------------------------
+    Set the response header callback routine user data
+      Example to show how data can be passed to the response header
+      callback routine to allow the routine to customize its
+      processing.
+    ---------------------------------------------------------------- */
+
+  /* Initialize header userdata
+  */
+  memset(&myRespHeaderUserData, 0, sizeof(myRespHeaderUserData));
+  memcpy(myRespHeaderUserData.respHdrEyeCatcher,"HdrData ",
+         sizeof(myRespHeaderUserData.respHdrEyeCatcher));
+  myRespHeaderUserData.respStatusCodeAddr = &respStatusCode;
+  myRespHeaderUserData.mainlineHdrFlagsAddr =
+                                          (int*)&mainlineHdrFlags;
+
+  printf("** Set HWTH_OPT_RESPONSEHDR_USERDATA for request ** \n");
+  loption = HWTH_OPT_RESPONSEHDR_USERDATA;
+  loptionValLen  = sizeof(myRespHeaderUserData);
+  loptionValueAddr = &myRespHeaderUserData;
+
+  if (!HTTP_Set(&lrc, pm_handle, loption,(void**)&loptionValueAddr,
+                loptionValLen, &ldiagArea))
+    return false;
+
+ /* ----------------------------------------------------------------
+    Set the response body callback routine
+      Set the address of the routine that is to receive control if
+      there is a response body returned by the server.
+    ---------------------------------------------------------------- */
+  printf("*Set HWTH_OPT_RESPONSEBODY_EXIT for request*\n");
+  loption = HWTH_OPT_RESPONSEBODY_EXIT;
+  loptionExit      = (int)rbdyexit;
+  loptionExitAddr  = &loptionExit;
+  loptionValLen  = sizeof(loptionExit);
+
+  if (!HTTP_Set(&lrc, pm_handle, loption, (void**)&loptionExitAddr,
+                loptionValLen, &ldiagArea))
+    return false;
+
+ /* ----------------------------------------------------------------
+    Set the response body callback routine user data
+      Example to show how data can be passed to the response body
+      callback routine to allow the routine to customize its
+      processing.
+    ---------------------------------------------------------------- */
+
+  /* Initialize body userdata
+  */
+  memset(&myRespBodyUserData, 0, sizeof(myRespBodyUserData));
+  memcpy(myRespBodyUserData.respBodyEyeCatcher,"BodyData",
+         sizeof(myRespBodyUserData.respBodyEyeCatcher));
+  myRespBodyUserData.mainlineHdrFlagsAddr = &mainlineHdrFlags;
+  myRespBodyUserData.responseBodyDataAddr = (int*)&myRespBodyData;
+
+  printf("** Set HWTH_OPT_RESPONSEBODY_USERDATA for request ** \n");
+  loption = HWTH_OPT_RESPONSEBODY_USERDATA;
+  loptionValLen  = sizeof(myRespBodyUserData);
+  loptionValueAddr = &myRespBodyUserData;
+
+  if (!HTTP_Set(&lrc, pm_handle, loption, (void**)&loptionValueAddr,
+                loptionValLen, &ldiagArea))
+    return false;
+
+ /* ----------------------------------------------------------------
+    Set the response body callback routine user data
+      Have the toolkit convert the response body from ASCII to EBCDIC
+    ---------------------------------------------------------------- */
+  printf("** Set HWTH_OPT_TRANSLATE_RESPBODY for request **\n");
+  loption = HWTH_OPT_TRANSLATE_RESPBODY;
+  lintOptionVal   = HWTH_XLATE_RESPBODY_A2E;
+  loptionValLen  = sizeof(lintOptionVal);
+
+  if (!HTTP_Set(&lrc, pm_handle, loption, (void**)&lintOptionValPtr,
+                loptionValLen, &ldiagArea))
+    return false;
+
+ /* ----------------------------------------------------------------
+    Build the necessary HTTP request headers
+      Create an SLIST and add a number of HTTP request headers to
+      it so that we can set multiple HTTP headers to be associated
+      with a single option
+    ---------------------------------------------------------------- */
+  if (!buildSList(pm_handle, pm_SListAddr))
+    return false;
+
+  loption = HWTH_OPT_HTTPHEADERS;
+  loptionValLen  = sizeof(lSList);
+
+  if (!HTTP_Set(&lrc, pm_handle, loption, (void**) &pm_SListAddr,
+                loptionValLen, &ldiagArea))
+    return false;
+
+  return true;
+}
+
+/****************************************************************/
+/*                                                              */
+/* FUNCTION: buildSList                                         */
+/*   Builds the required linked list for the HTTP headers option*/
+/*                                                              */
+/****************************************************************/
+int buildSList(HWTH_HANDLE_TYPE  pm_handle
+              ,HWTH_SLIST_TYPE  *pm_SListAddr) {
+
+  int success = true;
+  HWTH_SLST_FUNCTION_TYPE  lfunction;
+  char                    *lstring;
+  char                   **lstringAddr = &lstring;
+  uint32_t                 lstringLen;
+
+ /* ----------------------------------------------------------------
+    Add the Accept request header
+      Create a brand new SLST and specify the first header to be an
+      "Accept" header that requests that the server return the data
+      requested by the GET request to be in JSON format.
+    ---------------------------------------------------------------- */
+ lfunction   = HWTH_SLST_NEW;
+ lstring     = "Accept:application/json";
+ lstringLen  = 23;
+ *pm_SListAddr = 0;
+ if (!HTTP_Slst(&lrc, pm_handle, lfunction, pm_SListAddr,
+                (char **)lstringAddr, lstringLen, &ldiagArea))
+   return false;
+
+ /* ----------------------------------------------------------------
+    Add the Accept-Language request header
+      Append to the just-created SLST and specify an addition option
+      "Accept-Language" to infer to the server the regional settings
+      preferred by this application.
+    ---------------------------------------------------------------- */
+ lfunction  = HWTH_SLST_APPEND;
+ lstring    = "Accept-Language: en-US";
+ lstringLen = 22;
+
+ printf("Adding SLIST APPEND\n");
+ if (!HTTP_Slst(&lrc, pm_handle, lfunction, pm_SListAddr,
+                (char **)lstringAddr, lstringLen, &ldiagArea))
+   return false;
+
+ return true;
+}
+
+/****************************************************************/
+/*                                                              */
+/* FUNCTION: HTTP_Slst                                          */
+/*   Builds the required linked list for the HTTP headers option*/
+/*                                                              */
+/****************************************************************/
+int HTTP_Slst(HWTH_RETURNCODE_TYPE    *pm_rc
+             ,HWTH_HANDLE_TYPE         pm_handle
+             ,HWTH_SLST_FUNCTION_TYPE  pm_function
+             ,HWTH_SLIST_TYPE         *pm_sList
+             ,char                   **pm_stringAddr
+             ,uint32_t                 pm_stringLen
+             ,HWTH_DIAGAREA_TYPE      *pm_diagArea) {
+
+  hwthslst(pm_rc, pm_handle, pm_function, pm_sList,
+          (char **) pm_stringAddr, pm_stringLen, pm_diagArea);
+
+  printf("-----------------------------------------------");
+  if (*pm_rc == HWTH_OK)
+    printf("SUCCESS: SList succeeded (HWTHSLST).\n");
+  else {
+    printf("Slist failed (HWTHSLST).\n");
+    printf("Return Code: %d\n", *pm_rc);
+    printf("Service    : %d\n", pm_diagArea->HWTH_service);
+    printf("Reason Code: %s\n", pm_diagArea->HWTH_reasonCode);
+    printf("Reason Desc: %s\n", pm_diagArea->HWTH_reasonDesc);
+    return false;
+  }
+  return true;
+}
+
+/****************************************************************/
+/*                                                              */
+/* FUNCTION: HTTP_Request                                       */
+/*   Issues the HWTHRQST service and performs error checking    */
+/*                                                              */
+/****************************************************************/
+int HTTP_Request(HWTH_RETURNCODE_TYPE *pm_rc
+                ,HWTH_HANDLE_TYPE      pm_chandle
+                ,HWTH_HANDLE_TYPE      pm_rhandle
+                ,HWTH_DIAGAREA_TYPE   *pm_diagArea)             {
+
+  hwthrqst(pm_rc, pm_chandle, pm_rhandle, pm_diagArea);
+
+  printf("-----------------------------------------------\n");
+  if (*pm_rc == HWTH_OK) {
+    printf("SUCCESS: Request succeeded (HWTHRQST)\n");
+  } else {
+    printf("Request failed (HWTHRQST).\n");
+    printf("Return Code: %d\n", *pm_rc);
+    printf("Service    : %d\n", pm_diagArea->HWTH_service);
+    printf("Reason Code: %d\n", pm_diagArea->HWTH_reasonCode);
+    printf("Reason Desc: %s\n", pm_diagArea->HWTH_reasonDesc);
+    return false;
+  }
+  return true;
+}
+ /*******************************************************************/
+ /* FUNCTION: writeData                                             */
+ /*                                                                 */
+ /* Function:  Write the airport data                               */
+ /*  For simplicity, this sample outputs the data to standard out.  */
+ /*  In a real world application, this data could be displayed      */
+ /*  real-time in an application, written to storage media or       */
+ /*  displayed in some log or other media.                          */
+ /*                                                                 */
+ /*******************************************************************/
+ void writeData(RESPBODYDATA_TYPE responseBodyData) {
+
+ char airportDelayFillin??(4??);
+
+ printf("***********************************\n");
+ printf("Airport data for %s.\n",responseBodyData.airportIATA);
+ printf("***********************************\n \n");
+
+ printf("Airport name: %s.\n",responseBodyData.airportName);
+
+ printf("Airport state: %s.\n",responseBodyData.airportState);
+ printf("-----------------------------------\n");
+
+ if (responseBodyData.airportDelayFlags & AIRPORT_DELAY_MASK)
+   memcpy(airportDelayFillin, "yes", sizeof(airportDelayFillin));
+ else
+   memcpy(airportDelayFillin, "no ", sizeof(airportDelayFillin));
+
+ printf("Airport Delay: %s\n",airportDelayFillin);
+
+ if (responseBodyData.airportDelayFlags & AIRPORT_DELAY_MASK) {
+   printf("Delay Type: %s\n",responseBodyData.airportStatusType);
+   printf("Delay Reason: %s\n",responseBodyData.airportStatusReason);
+   printf("Avg Delay: %s\n",responseBodyData.airportAverageDelay);
+ }
+
+ printf("-----------------------------------\n");
+ printf("Current weather conditions: \n %s \n",
+                               responseBodyData.airportWeatherCond);
+ printf("Temperature: %s\n",responseBodyData.airportTemp);
+ printf("Wind: %s\n",responseBodyData.airportWind);
+ printf("***********************************\n");
+
+ }
+
+/****************************************************************/
+/*                                                              */
+/* FUNCTION: HTTP_Disconnect                                    */
+/*   Issues the HWTHDISC service and performs error checking    */
+/*                                                              */
+/****************************************************************/
+void HTTP_Disconnect(HWTH_RETURNCODE_TYPE *pm_rc
+                    ,HWTH_HANDLE_TYPE      pm_handle
+                    ,HWTH_DIAGAREA_TYPE   *pm_diagArea)      {
+
+  hwthdisc(pm_rc, pm_handle, pm_diagArea);
+
+  printf("-----------------------------------------------\n");
+  if (*pm_rc == HWTH_OK) {
+    printf("SUCCESS: Disconnect succeeded (HWTHDISC)\n");
+  } else {
+    printf("Request failed (HWTHDISC).\n");
+    printf("Return Code: %d\n", *pm_rc);
+    printf("Service    : %d\n", pm_diagArea->HWTH_service);
+    printf("Reason Code: %d\n", pm_diagArea->HWTH_reasonCode);
+    printf("Reason Desc: %s\n", pm_diagArea->HWTH_reasonDesc);
+  }
+}
+
+/****************************************************************/
+/*                                                              */
+/* FUNCTION: HTTP_Terminate                                     */
+/*                                                              */
+/****************************************************************/
+void HTTP_Terminate(HWTH_RETURNCODE_TYPE  *pm_rc
+                   ,HWTH_HANDLE_TYPE       pm_handle
+                   ,HWTH_FORCEOPTION_TYPE  pm_forceoption
+                   ,HWTH_DIAGAREA_TYPE    *pm_diagArea)         {
+
+  hwthterm(pm_rc, pm_handle, pm_forceoption, pm_diagArea);
+
+  printf("-----------------------------------------------\n");
+  if (*pm_rc == HWTH_OK)
+    printf("SUCCESS: Terminate succeeded (HWTHTERM)\n");
+  else {
+    printf("Request failed (HWTHTERM).\n");
+    printf("Return Code: %d\n", *pm_rc);
+    printf("Service    : %d\n", pm_diagArea->HWTH_service);
+    printf("Reason Code: %s\n", pm_diagArea->HWTH_reasonCode);
+    printf("Reason Desc: %s\n", pm_diagArea->HWTH_reasonDesc);
+  }
+}
+
+/****************************************************************/
+/*                                                              */
+/* FUNCTION: Sample Response Header Callback Routine (Exit)     */
+/*                                                              */
+/****************************************************************/
+uint32_t rhdrexit(HWTH_STATUS_LINE_TYPE *httpResp
+        ,HWTH_RESP_EXIT_FLAGS_TYPE *exitFlags
+        ,char                **headerName
+        ,uint32_t             *headerNameLen
+        ,char                **headerValue
+        ,uint32_t             *headerValueLen
+        ,char                **headerUserData
+        ,uint32_t             *headerUserDataLen) {
+
+ /* Declares
+ */
+ static const char CONTENT_TYPE??(??) = "Content-Type";
+ static const char JSON_CONTENT??(??) = "application/json";
+
+ HEADERUSERDATA_TYPE * myRespHeaderUserData =
+                         (HEADERUSERDATA_TYPE *) *headerUserData;
+
+ /* Write "header exit entered" message
+ */
+ printf("*******************************************\n");
+ printf("** Response Header Exit Receives Control **\n");
+
+ /* Make sure headerUserData was specified
+ */
+ if (*headerUserData == 0)  {
+   printf("No Header userdata was specified!\n");
+   return HWTH_RESP_EXIT_RC_ABORT;
+ }
+
+ /* Write status code and reason the first time the header exit
+    receives control
+ */
+ if (respStatusCode == 0) {
+   printf("***********************************\n");
+   printf("HTTP Status Reason: %d\n",httpResp->HWTH_statusCode);
+   printf("***********************************\n\n");
+ }
+
+ /* Copy the statusCode and headerCount into the HeaderUserData
+ */
+ respStatusCode = httpResp->HWTH_statusCode;
+ myRespHeaderUserData->respHeaderCount +=1;
+
+ /* If the system did not return the expected response, then abort
+    We don't want to proceed further if the status was not ok.  Give
+    control back to the HWTHRQST call as soon as possible
+ */
+ if (httpResp->HWTH_statusCode != 200)   /* HTTP OK */
+   return HWTH_RESP_EXIT_RC_ABORT;
+
+ /* If exitflags were specified, make a note of it
+ */
+ if (*exitFlags > 0) {
+   if (*exitFlags & HWTH_EXITFLAG_COOKIESTORE_FULL)
+     printf("Cookie Store Full!\n");
+   else
+     printf("Other exit flag found.\n");
+ }
+
+ /* Print the header name
+ */
+ printf("Response Header %d \n  Name: %s \n",
+         myRespHeaderUserData->respHeaderCount,*headerName);
+
+ /* Print the header value
+ */
+ printf("  Value: %s\n",*headerValue);
+
+ /* Did we receive the header for the content type and is the
+    value application/json?
+ */
+ if (strncmp(*headerName, CONTENT_TYPE,sizeof(CONTENT_TYPE)-1) == 0) {
+   if (strncmp(*headerValue, JSON_CONTENT,
+                                     sizeof(JSON_CONTENT)-1) == 0) {
+      /* Set indicator that we have the right format of data
+      */
+      mainlineHdrFlags |= JSON_CONTENT_MASK;
+      printf("Received correct Content-Type header.\n");
+   }
+ }
+
+ /* Write "header exit exited" message
+ */
+ printf("**     Response Header Exit Returns     **\n");
+ printf("*******************************************\n");
+
+ return HWTH_RESP_EXIT_RC_OK;
+}
+
+/****************************************************************/
+/*                                                              */
+/* FUNCTION: Response Body Exit                                 */
+/*                                                              */
+/****************************************************************/
+void rbdyexit(HWTH_STATUS_LINE_TYPE *httpResp
+            ,HWTH_RESP_EXIT_FLAGS_TYPE  *exitFlags
+            ,char                      **respBody
+            ,uint32_t                   *respBodyLen
+            ,char                      **bodyUserData
+            ,uint32_t                   *bodyUserDataLen) {
+
+/* ----------------------------------------------------------------- */
+/* Mainline code                                                     */
+/* ----------------------------------------------------------------- */
+
+ /* Make sure bodyUserData was specified
+ */
+ if (*bodyUserData == 0)  {
+   printf("No Body userdata was specified!\n");
+   return;
+ }
+
+ /* Did the response come back in JSON format?
+ */
+ if (!(mainlineHdrFlags & JSON_CONTENT_MASK)) {
+   printf("Response body in control without ever\n");
+   printf("receiving indicator of JSON data.\n");
+   return;
+ }
+
+ /* Use the z/OS Client Web Enablement Toolkit JSON parser
+    to parse thru the JSON data
+ */
+
+ /* Create a new parser instance
+ */
+ if (!init_parser()) {
+   return;
+ }
+
+ /* Parse the sample JSON text
+ */
+ if(!parse_json_text(*respBody,*respBodyLen)) {
+   do_cleanup();
+   return;
+ }
+
+ /* Search the data to get the necessary pieces of information
+ */
+ searchAndDeserializeData();
+
+ /* Terminate the parser instance
+ */
+ do_cleanup();
+
+ /* Write "body exit exited" message
+ */
+ printf("**     Response Body Exit Returns     **\n");
+ printf("****************************************\n");
+}
+
+/*
+   Method: find_object
+
+   Searches the specified JSON object for a name:value pair where the
+   name matches the specified search string and the value type is
+   object. This is a convenience method that can be used when the
+   structure of the JSON data is known beforehand.
+   Input:
+     - A handle of type object or array
+     - A string used as the search parameter.
+   Output: If a match is found, a handle to the object value of the
+   name:value  pair is returned.  */
+
+HWTJ_HANDLE_TYPE find_object(
+                  HWTJ_HANDLE_TYPE object,char *search_string) {
+   HWTJ_HANDLE_TYPE *obj_handle_addr = (HWTJ_HANDLE_TYPE *)
+       find_value(object, search_string, HWTJ_OBJECT_TYPE);
+   return *obj_handle_addr;
+}
+
+ /*******************************************************************/
+ /* Procedure: searchAndDeserializeData                             */
+ /*                                                                 */
+ /* Function:  Search for various data returned by the server       */
+ /*            and save them in a data structure for future use.    */
+ /*                                                                 */
+ /* Services Used:                                                  */
+ /*                                                                 */
+ /*    Almost all of the routines called by this routine and below  */
+ /*    were copied directly from the z/OS Client Web Enablement     */
+ /*    Toolkit JSON parser sample (HWTJXC1).                        */
+ /*                                                                 */
+ /* Usage:                                                          */
+ /*                                                                 */
+ /* Use HWTJSRCH to find multipe name value pairs                   */
+ /*                                                                 */
+ /*******************************************************************/
+ searchAndDeserializeData() {
+
+ /* Search for specific values and objects in the response body and
+    deserialize them into the myRespBodyUserData data structure to be
+    used to generate a report of the data.
+ */
+ int stringLen = 0;
+ HWTJ_HANDLE_TYPE statusObject = 0;
+ HWTJ_HANDLE_TYPE weatherObject = 0;
+
+ /*------------------------------------------------------------------
+    Get airportGeneralInfo
+   ------------------------------------------------------------------*/
+
+ /* Get airportName
+ */
+ char *airport_name = find_string(0, "name");
+
+ if (*airport_name) {
+   stringLen = strlen(airport_name);
+   if (stringLen > sizeof(myRespBodyData.airportName))
+     stringLen = sizeof(myRespBodyData.airportName);
+
+   memcpy(myRespBodyData.airportName, airport_name, stringLen);
+ }
+
+ /* Get airportIATA
+ */
+ char *airport_IATA = find_string(0, "IATA");
+
+ if (*airport_IATA) {
+   stringLen = strlen(airport_IATA);
+   if (stringLen > sizeof(myRespBodyData.airportIATA))
+     stringLen = sizeof(myRespBodyData.airportIATA);
+
+   memcpy(myRespBodyData.airportIATA, airport_IATA, stringLen);
+ }
+
+ /* Get airportState
+ */
+ char *airport_state = find_string(0, "state");
+
+ if (*airport_state) {
+   stringLen = strlen(airport_state);
+   if (stringLen > sizeof(myRespBodyData.airportState))
+     stringLen = sizeof(myRespBodyData.airportState);
+
+   memcpy(myRespBodyData.airportState, airport_state, stringLen);
+ }
+
+ /*------------------------------------------------------------------
+    Get airportDelayInfo
+   ------------------------------------------------------------------*/
+
+ /* Get airportDelay and convert to boolean value
+ */
+ char *airport_delay = find_string(0, "delay");
+
+ if (*airport_delay) {
+   stringLen = strlen(airport_delay);
+     if ((stringLen == 4) && (strncmp(
+                                airport_delay,"true", stringLen)))
+       myRespBodyData.airportDelayFlags |= AIRPORT_DELAY_MASK;
+ }
+
+ if ((*airport_delay) && (myRespBodyData.airportDelayFlags)) {
+   /* Get delay specifics if a delay has been reported.  Find the
+      status object.  The delay information is comprised of entries
+      within the status object.
+    */
+   statusObject = find_object(0, "status");
+
+   if (statusObject) {
+     /* Get airportStatusType
+     */
+     char *status_type = find_string(statusObject, "type");
+
+     if (*status_type) {
+       stringLen = strlen(status_type);
+       if (stringLen > sizeof(myRespBodyData.airportStatusType))
+         stringLen = sizeof(myRespBodyData.airportStatusType);
+
+       memcpy(myRespBodyData.airportStatusType, status_type,
+               stringLen);
+     }
+
+     /* Get airportStatusReason
+     */
+     char *status_reason = find_string(statusObject, "reason");
+
+     if (*status_reason) {
+       stringLen = strlen(status_reason);
+       if (stringLen > sizeof(myRespBodyData.airportStatusReason))
+         stringLen = sizeof(myRespBodyData.airportStatusReason);
+
+       memcpy(myRespBodyData.airportStatusReason, status_reason,
+               stringLen);
+     }
+
+     /* Get airportAverageDelay
+     */
+     char *status_avgDelay = find_string(statusObject, "avgDelay");
+
+     if (*status_avgDelay) {
+       stringLen = strlen(status_avgDelay);
+       if (stringLen > sizeof(myRespBodyData.airportAverageDelay))
+         stringLen = sizeof(myRespBodyData.airportAverageDelay);
+
+       memcpy(myRespBodyData.airportAverageDelay, status_avgDelay,
+               stringLen);
+     }
+   }
+ }
+
+ /*------------------------------------------------------------------
+    Get airportWeather
+   ------------------------------------------------------------------*/
+
+ /* Find the weather object.  The weather data is comprised of entries
+    inside the weather object.
+ */
+ weatherObject = find_object(0, "weather");
+
+ if (weatherObject) {
+
+   /* Get airportWeatherCond (Note that airportWeatherCond also has
+      name of "weather".  The parser allows us to scope this weather
+      condition within the weather object easily)
+   */
+   char *weather_cond = find_string(weatherObject, "weather");
+
+   if (*weather_cond) {
+     stringLen = strlen(weather_cond);
+     if (stringLen > sizeof(myRespBodyData.airportWeatherCond))
+       stringLen = sizeof(myRespBodyData.airportWeatherCond);
+
+     memcpy(myRespBodyData.airportWeatherCond, weather_cond,
+             stringLen);
+   }
+
+   /* Get airportTemp
+   */
+   char *weather_temp = find_string(weatherObject, "temp");
+
+   if (*weather_temp) {
+     stringLen = strlen(weather_temp);
+     if (stringLen > sizeof(myRespBodyData.airportTemp))
+       stringLen = sizeof(myRespBodyData.airportTemp);
+
+     memcpy(myRespBodyData.airportTemp, weather_temp,
+             stringLen);
+   }
+
+   /* Get airportWeatherWind
+   */
+   char *weather_wind = find_string(weatherObject, "wind");
+
+   if (*weather_wind) {
+     stringLen = strlen(weather_wind);
+     if (stringLen > sizeof(myRespBodyData.airportWind))
+       stringLen = sizeof(myRespBodyData.airportWind);
+
+     memcpy(myRespBodyData.airportWind, weather_wind,
+             stringLen);
+   }
+ }
+}
+
+ /*******************************************************************/
+ /* The code below is mostly unaltered routines which were imported */
+ /* from the z/OS Client Web Enablement Toolkit JSON parser C       */
+ /* sample HWTJXC1 shipped in samplib.  They are not illustrating   */
+ /* HTTP services but provide code to easily parse thru the JSON    */
+ /* data.                                                           */
+ /*******************************************************************/
+
+/*
+   Method: init_parser
+
+   Initializes the global parser_instance variable.
+
+   Services Used:
+
+      HWTJINIT: Provides a handle to a parse instance which is then
+                used in subsequent service calls. The HWTJINIT service
+                must be invoked before invoking any other parsing
+                service.
+ */
+_Bool init_parser() {
+
+  /* Declare a variable to hold the return value. */
+  _Bool success = false;
+
+  /* Initialize the parser work area and retrieve a handle to a parser
+   * instance.
+   */
+  hwtjinit(&lrc,
+      0,                 /* Let the parser choose the workarea size */
+      parser_instance,
+      &diag_area);
+
+  if (lrc == HWTJ_OK) {
+    printf("SUCCESS: Parser initialized.\n");
+    success = true;
+  } else {
+    display_error("Parser initialization failed.");
+  }
+
+  return success;
+}
+
+/*
+   Method: parse_json_text
+
+   Parses the sample JSON data.
+
+   Services Used:
+
+      HWTJPARS: Builds an internal representation of the specified
+                JSON string.  This allows efficient search, traversal,
+                and modification of the JSON data.
+
+      USAGE:   HWTJPARS does not make a local copy of the JSON source
+               string.  Therefore, the caller must ensure that the
+               provided source string remains unmodified for the
+               duration of the parser instance. If the source string
+               is modified, subsequent service calls may result in
+               unexpected behavior.
+
+ */
+_Bool parse_json_text(const char *jtext, uint32_t jtextLen) {
+
+  /* Declare a variable to hold the return variable. */
+  _Bool success = false;
+
+  /* Parse the sample JSON text string. Parse scans the JSON text
+     string and creates an internal representation of the JSON data
+     suitable for search and create operations.
+  */
+   printf("jtext len = %d \n",jtextLen);
+
+  hwtjpars(&lrc,
+      parser_instance,
+      (char *)&jtext, /* JSON text string address(input) */
+      jtextLen,       /* JSON text string length (input) */
+      &diag_area);
+
+  if (lrc == HWTJ_OK) {
+    printf("SUCCESS: JSON data parsed.\n");
+    success = true;
+  } else {
+    display_error("Unable to parse JSON data.");
+  }
+
+  return success;
+}
+
+
+/*
+   Method: do_cleanup
+
+   Performs cleanup by freeing memory used by the parser and
+   invalidating the parser handle.
+
+   Services Used:
+
+      HWTJTERM: Terminates a parser instance and frees the storage
+                allocated by the parse services.
+
+      USAGE:    The third parameter to hwtjterm is used to specify the
+                behavior of terminate if the parser is determined to
+                be stuck in an "in-use" state. IBM recommends using
+                the HWTJ_NOFORCE option in most cases. Because our
+                sample is not multi-threaded, the risk of the parser
+                getting stuck in an "in-use" state is low. Therefore,
+                we provide a value of HWTJ_NOFORCE for the force
+                option.
+
+      NOTE: Consider enhancing this sample to postpone the call to the
+      terminate service when a prior service call resulted in a return
+      code of HWTJ_UNEXPECTED_ERROR. This will allow appropriate
+      action to be taken to dump the work area storage for subsequent
+      analysis by the IBM support center. Once the dump has been
+      taken, terminate can be issued to free the storage from the
+      user's address space.
+ */
+_Bool do_cleanup() {
+
+  /* Declare a variable to hold the return value. */
+  _Bool success = false;
+
+  /* On the first attempt, try to terminate with the force option
+     disabled.  This is the IBM recommended value for the force
+     option. If the parser is in an inuse state, further cleanup
+     processing is done in the following EVALUATE statement. A parser
+     can be in an INUSE state if a prior service call encountered an
+     unexpected error that caused it to exit abnormally, or if the
+     parser-handle is used in a multi-threaded application.
+   */
+  if (lrc != HWTJ_PARSERHANDLE_INUSE) {
+    /* Perform cleanup. */
+    hwtjterm(&lrc, parser_instance, HWTJ_NOFORCE, &diag_area);
+  }
+
+  /* Determine whether further cleanup processing is necessary. */
+  switch (lrc) {
+    case HWTJ_OK:
+      printf("SUCCESS: Parser work area freed.\n");
+      success = true;
+      break;
+    case HWTJ_PARSERHANDLE_INUSE:
+      display_error("Unable to perform cleanup.\n "
+          "Retrying cleanup with HWTJ_FORCE option enabled.");
+
+      /* Attempt to force cleanup. Use with caution as recommended in
+         the parser documentation
+       */
+      hwtjterm(&lrc, parser_instance, HWTJ_FORCE, &diag_area);
+
+      /* Check if cleanup was successful. */
+      if (lrc == HWTJ_OK) {
+        printf("SUCCESS: Parser work area freed using "
+               "force option.\n");
+        success = true;
+      } else {
+         display_error("Unable to perform cleanup "
+                       "with HWTJ_FORCE option. \n");
+      }
+      break;
+    default:
+      display_error("Unable to perform cleanup.\n "
+            "Could not free parser work area.");
+  }
+  return success;
+}
+
+/*
+   Method: find_value
+
+   Searches the specified object for a name:value pair whose name
+   matches the the specified search string. This is a utility method
+   used by the "find" routines to easily search and retrieve a value
+   from an object when the name and value type is known.
+
+   Input:  - A handle of type object or array.
+           - A string used as a search parameter.
+           - A JSON type as defined in the IBM-provided C interface
+             definition file.
+
+   Output: A pointer to the value is returned.
+
+   Services Used:
+      HWTJGJST: Gets the JSON type associated with a specified object
+                or entry handle.
+      HWTJSRCH: Finds a particular name string within the JSON text.
+
+ */
+void *find_value(HWTJ_HANDLE_TYPE object_to_search, char *name,
+    HWTJ_JTYPE_TYPE expected_value_type) {
+
+  /* Declare a variable to hold the entry type returned by hwtjgjst. */
+  HWTJ_JTYPE_TYPE entry_type;
+
+  /* Declare a handle to store a pointer to value. */
+  void *value_addr = 0;
+
+
+  /* Search the specified object for the specified name. */
+  hwtjsrch(&lrc,
+      parser_instance,
+      HWTJ_SEARCHTYPE_OBJECT, /* limit the search scope */
+      (char *)&name, /* search string address */
+      strlen(name), /* search string length */
+      object_to_search,  /* handle of object to search */
+      0, /* starting point of the search */
+      &value_handle, /* search result handle (output) */
+      &diag_area);
+
+  /* Check that the search found a result. */
+  if (lrc == HWTJ_OK)
+   {
+    /* Get the object's type. */
+    hwtjgjst(&lrc,
+        parser_instance,
+        value_handle, /* handle to the value whose type
+                         to check (input) */
+        &entry_type, /* value type constant returned by
+                        hwtjgjst (output) */
+        &diag_area);
+
+    if (lrc == HWTJ_OK)
+     {
+      /* Verify that the returned handle has the expected type. */
+      if (entry_type == expected_value_type)
+        value_addr = do_get_value(entry_type);
+      else
+       {
+        printf("Error occurred while searching for %s\n"
+               "The name was found, but the value was "
+               "not of the expected type.\n", name);
+        printf("Expected type: %d\nActual type: %d\n",
+            expected_value_type, entry_type);
+       }
+     }
+    else
+      display_error("ERROR: Unable to retrieve JSON type.");
+   }
+  else
+    printf("ERROR: Search failed for name \"%s\". "
+        "Name was not found in the specified "
+        "object.\n", name);
+
+  /*
+     At this point, if the search did not return a match, or the
+     expected type did not match the actual type, the value_addr
+     output parm is still set to NULL. Otherwise, value_addr
+     points to the appropriate address. The caller is responsible
+     for casting the void pointer to the appropriate pointer type.
+   */
+  return value_addr;
+} //find_value()
+
+/*
+   Method: do_get_value
+
+   Retrieves the specified value by calling the appropriate service
+   using the value of the specified HWTJ_JTYPE_TYPE.
+
+   Input: - A value handle.
+          - A valid entry type as defined in the IBM-provided C
+            interface definition file.
+
+   Services Used:
+      HWTJGVAL: Retrieves the value of string or number entry.
+      HWTJGBOV: Retrieves the value of a boolean entry.
+ */
+void *do_get_value(
+    HWTJ_JTYPE_TYPE entry_type) {
+
+  /* Declare a variable to hold the pointer to the copy. */
+  void *value_addr = 0;
+  int value_length = 0;
+  int string_value_addr = 0;
+
+  /*
+     The following checks determine the value's type and set
+     the value_addr output parm appropriately.
+
+     In the case of a string or number type, the source text is
+     copied into a new buffer, and the value_addr output parm is
+     set to the address of this buffer.
+
+     In the case of a boolean value type, the HWTJ_TRUE/HWTJ_FALSE
+     value is converted to a bool type and the value_addr output
+     parm is set to the address of the bool value.
+
+     In the case of an object or array type, the value_addr output
+     parm is set to the address of the object or array handle.
+   */
+
+  /* Determine the value type. */
+  if ((entry_type == HWTJ_STRING_TYPE) ||
+      (entry_type == HWTJ_NUMBER_TYPE)) {
+
+    /* Issue hwtjgval to get the address and length of the string. */
+    hwtjgval(&lrc,
+        parser_instance,
+        value_handle, /* handle to a value (input) */
+        &string_value_addr, /* value address (output) */
+        &value_length, /* returned value length (output) */
+        &diag_area);
+
+    if (lrc == HWTJ_OK) {
+      /* Allocate memory to store a copy of the string + null
+         terminator. */
+      value_addr = malloc(value_length + 1);
+
+      /* Copy the JSON source text to the local variable. */
+      strncpy((char *)value_addr, (char *)string_value_addr,
+               value_length);
+
+      /* Append the null-terminator. */
+      strcat((char *)value_addr, "\0");
+     }
+  } else if (entry_type == HWTJ_BOOLEAN_TYPE) {
+
+    /* Declare a variable to store the value returned by hwtjgbov. */
+    HWTJ_BOOLEANVALUE_TYPE hwtj_boolean;
+
+    /* Retrieve the value and store it in a local variable. */
+    hwtjgbov(&lrc,
+        parser_instance,
+        value_handle, /* handle to the value (input) */
+        &hwtj_boolean, /* boolean value returned by hwtjgbov (output)*/
+        &diag_area);
+
+    if (lrc == HWTJ_OK) {
+      /* Store the address of the boolean value in our return value. */
+      value_addr = (void*)&hwtj_boolean;
+    } else {
+      display_error("Unable to retrieve boolean value.");
+    }
+
+  } else if ((entry_type == HWTJ_ARRAY_TYPE) ||
+      (entry_type == HWTJ_OBJECT_TYPE)) {
+
+    /* Store the address of the handle in our return variable. */
+    value_addr = &value_handle;
+  }
+
+  return value_addr;
+}
+
+/*
+   Method: find_string
+
+   Searches the specified JSON object for a name:value pair where the
+   name matches the specified search string and the value type is
+   string. This is a convenience method that can be used when the
+   structure of the JSON data is known beforehand.
+
+   Input:  - A handle of type object or array.
+           - A string used as the search parameter.
+
+   Output: If a match is found, the string value of the name:value
+           pair is returned.
+ */
+char *find_string(HWTJ_HANDLE_TYPE object, char *search_string) {
+  return (char *) find_value(object, search_string, HWTJ_STRING_TYPE);
+}
+
+/*
+ * Method: display_error
+ *
+ * A helper method for displaying error diagnostic information.
+ */
+void display_error(char *msg) {
+  printf("ERROR: %s\n", msg);
+  printf("Return Code: %d\n", lrc);
+  printf("Reason Code: %d\n", diag_area.ReasonCode);
+  printf("Reason Text: %s\n", diag_area.ReasonDesc);
